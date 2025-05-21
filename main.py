@@ -138,7 +138,7 @@ def parse():
         os.unlink(tmp.name)
 
     output_path = "parsed_output.xlsx"
-    df.to_excel(output_path, index=False, engine="openpyxl")
+    df.to_excel(output_path, index=False, engine="openpyxl", sheet_name="Parsed", na_rep="")
     return send_file(output_path, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
