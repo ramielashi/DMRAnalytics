@@ -115,3 +115,30 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         all_data.append(row)
 
     return pd.DataFrame(all_data)
+
+from flask import Flask, request, send_file
+import tempfile
+import os
+
+app = Flask(__name__)
+
+@app.route("/", methods=["GET"])
+def home():
+    return "DMR parser is live."
+
+@app.route("/parse", methods=["POST"])
+def parse():
+    if 'file' not in request.files:
+        return "No file uploaded", 400
+
+    file = request.files['file']
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        file.save(tmp.name)
+        df = parse_limited_morning_report(tmp.name)
+        os.unlink(tmp.name)
+
+    output_path = "parsed_output.xlsx"
+    df.to_excel(output_path, index=False, engine="openpyxl")
+    return send_file(output_path, as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
