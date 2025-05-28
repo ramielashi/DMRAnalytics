@@ -1,4 +1,5 @@
 from flask import Flask, request, send_file
+from flask_cors import CORS
 import fitz  # PyMuPDF
 import re
 import pandas as pd
@@ -7,6 +8,7 @@ import os
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+CORS(app)
 
 def extract_val(pattern, text, default=None):
     match = re.search(pattern, text)
