@@ -1,5 +1,3 @@
-raise Exception("Force crash to test Gunicorn load")
-
 from flask import Flask, request, send_file
 import fitz  # PyMuPDF
 import re
@@ -69,3 +67,8 @@ def parse_batch():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
+@app.route("/parse-batch", methods=["POST"])
+def parse_batch():
+    print("✅ POST /parse-batch hit")
+    ...
