@@ -1,3 +1,4 @@
+raise Exception("Force crash to test Gunicorn load")
 
 from flask import Flask, request, send_file
 import fitz  # PyMuPDF
