@@ -122,6 +122,11 @@ def parse_batch():
                 os.unlink(tmp.name)
 
     final_df = pd.concat(combined_data, ignore_index=True)
+
+    # ✅ Prevent Excel formula injection by escaping leading "="
+    for col in final_df.select_dtypes(include='object').columns:
+        final_df[col] = final_df[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
+
     output_path = "combined_output.xlsx"
     final_df.to_excel(output_path, index=False, engine="openpyxl")
     return send_file(output_path, as_attachment=True, download_name="LMR_Well_Data.xlsx")
