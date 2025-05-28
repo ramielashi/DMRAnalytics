@@ -4,3 +4,4 @@ pymupdf
 pandas
 openpyxl
 gunicorn
+flask_cors
