@@ -56,6 +56,7 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         row["WOB"] = extract_val(r'WOB\s+([^\n]+)', report)
         row["RPM"] = extract_val(r'RPM\s+([^\n]+)', report)
 
+        # Mud data
         muds = re.findall(r'Weight\s+([0-9.]+)\s+PCF.*?Funnel\s+Vis\.\(SEC\)\s+([0-9.]+).*?PV\s+([0-9.]+).*?YP\s+([0-9.]+)', report, re.DOTALL)
         for i, mud in enumerate(muds[:3]):
             row[f"Mud {i+1} Weight (PCF)"] = mud[0]
@@ -63,12 +64,14 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
             row[f"Mud {i+1} PV"] = mud[2]
             row[f"Mud {i+1} YP"] = mud[3]
 
+        # Tops
         tops = re.findall(r'([A-Z]{2,10})\s+([0-9,]+)\s+([^\n]*)', report)
         for i, top in enumerate(tops[:5]):
             row[f"Formation {i+1} Name"] = top[0]
             row[f"Formation {i+1} Depth"] = top[1]
             row[f"Formation {i+1} Comment"] = top[2]
 
+        # Personnel
         personnel = re.findall(r'([A-Z0-9]{2,5})\s+([A-Z]{3,5})\s+([0-9]{1,3})', report)
         for i, person in enumerate(personnel[:5]):
             row[f"Personnel {i+1} Company"] = person[0]
@@ -81,17 +84,18 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         row["RER Readings"] = " | ".join(r.strip() for r in rer_texts if "PPM" in r or "LFL" in r)
 
         remarks = re.search(r'Foreman Remarks\s*\n(.*?)(?:Page \d+ of \d+|\n\s*Saudi Aramco|mailto:)', report, re.DOTALL | re.IGNORECASE)
-        if remarks:
-            row["Foreman Remarks"] = re.sub(r'\s+', ' ', remarks.group(1).strip())
+        row["Foreman Remarks"] = re.sub(r'\s+', ' ', remarks.group(1).strip()) if remarks else None
 
         timeline = re.findall(r'\d{4} - \d{4}.*?Summary of Operations(.*?)\n(?=\d{4} - \d{4}|\n\s*\*|Foreman Remarks)', report, re.DOTALL)
         row["Operations Timeline"] = " | ".join([re.sub(r'\s+', ' ', t.strip()) for t in timeline])
 
         drill_string = re.findall(r'Order Component Provider.*?Serial \n#\n(.*?)\n\n', report, re.DOTALL)
-        row["Drill String"] = re.sub(r'\s+', ' ', drill_string[0].strip()) if drill_string else None
+        ds_text = re.sub(r'\s+', ' ', drill_string[0].strip()) if drill_string else None
+        row["Drill String"] = None if ds_text and "Page" in ds_text else ds_text
 
         survey = re.search(r'DAILY SURVEY\s*\n(.*?)\n\n', report, re.DOTALL)
-        row["Directional Survey"] = re.sub(r'\s+', ' ', survey.group(1).strip()) if survey else None
+        s_text = re.sub(r'\s+', ' ', survey.group(1).strip()) if survey else None
+        row["Directional Survey"] = None if s_text and "Page" in s_text else s_text
 
         row["Wind"] = extract_val(r'Wind\s+([A-Z]+)', report)
         row["Sea"] = extract_val(r'Sea\s+([A-Z]+)', report)
@@ -103,37 +107,3 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         all_data.append(row)
 
     return pd.DataFrame(all_data)
-
-@app.route("/parse-batch", methods=["POST"])
-def parse_batch():
-    if 'files' not in request.files:
-        return "No files uploaded", 400
-
-    files = request.files.getlist("files")
-    combined_data = []
-
-    for file in files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            file.save(tmp.name)
-            try:
-                df = parse_limited_morning_report(tmp.name)
-                combined_data.append(df)
-            finally:
-                os.unlink(tmp.name)
-
-    final_df = pd.concat(combined_data, ignore_index=True)
-
-    # ✅ Prevent Excel formula injection by escaping leading "="
-    for col in final_df.select_dtypes(include='object').columns:
-        final_df[col] = final_df[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
-
-    output_path = "combined_output.xlsx"
-    final_df.to_excel(output_path, index=False, engine="openpyxl")
-    return send_file(output_path, as_attachment=True, download_name="LMR_Well_Data.xlsx")
-
-@app.route("/")
-def home():
-    return "DMR Batch Parser is running."
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
