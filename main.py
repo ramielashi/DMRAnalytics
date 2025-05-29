@@ -107,3 +107,37 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         all_data.append(row)
 
     return pd.DataFrame(all_data)
+
+@app.route("/parse-batch", methods=["POST"])
+def parse_batch():
+    if 'files' not in request.files:
+        return "No files uploaded", 400
+
+    files = request.files.getlist("files")
+    combined_data = []
+
+    for file in files:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            file.save(tmp.name)
+            try:
+                df = parse_limited_morning_report(tmp.name)
+                combined_data.append(df)
+            finally:
+                os.unlink(tmp.name)
+
+    final_df = pd.concat(combined_data, ignore_index=True)
+
+    # Escape formulas
+    for col in final_df.select_dtypes(include='object').columns:
+        final_df[col] = final_df[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
+
+    output_path = "combined_output.xlsx"
+    final_df.to_excel(output_path, index=False, engine="openpyxl")
+    return send_file(output_path, as_attachment=True, download_name="LMR_Well_Data.xlsx")
+
+@app.route("/")
+def home():
+    return "DMR Batch Parser is running."
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
