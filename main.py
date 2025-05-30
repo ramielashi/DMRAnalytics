@@ -17,14 +17,41 @@ def extract_val(pattern, text, default=None):
     except IndexError:
         return default
 
-def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
+def parse_summary_operations(text, rig, well, date):
+    blocks = re.findall(r'(\d{4}) - (\d{4})\s+(\d+)\s+(\d+)\s+([A-Z]+)\s+([A-Z])\s+([A-Z]{2})\s+([A-Z]+)\s+([A-Z]+)\s+([0-9]*)\s+([0-9]*)\s+([0-9]*)\s+([0-9]*)\s+(.*?)\n(?=\d{4} - \d{4}|$)', text, re.DOTALL)
+    rows = []
+    for b in blocks:
+        row = {
+            "Date": date,
+            "Rig": rig,
+            "Well": well,
+            "From": b[0],
+            "To": b[1],
+            "Hrs": b[2],
+            "Lateral": b[3],
+            "Phase": b[4],
+            "Cat.": b[5],
+            "Major OP": b[6],
+            "Action": b[7],
+            "Object": b[8],
+            "Hole Depth Start": b[9],
+            "Hole Depth End": b[10],
+            "Event Depth Start": b[11],
+            "Event Depth End": b[12],
+            "Summary of Operations": re.sub(r'\s+', ' ', b[13]).strip()
+        }
+        rows.append(row)
+    return rows
+
+def parse_limited_morning_report(pdf_path: str):
     doc = fitz.open(pdf_path)
     text_pages = [doc.load_page(p).get_text() for p in range(len(doc))]
     full_text = "\n".join(text_pages)
     reports = re.split(r'(?=Limited Morning Report for \d{2}/\d{2}/\d{4})', full_text)
     reports = [r.strip() for r in reports if "Limited Morning Report for" in r]
 
-    all_data = []
+    main_data = []
+    operations_data = []
 
     for report in reports:
         row = {}
@@ -56,7 +83,6 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         row["WOB"] = extract_val(r'WOB\s+([^\n]+)', report)
         row["RPM"] = extract_val(r'RPM\s+([^\n]+)', report)
 
-        # Mud data
         muds = re.findall(r'Weight\s+([0-9.]+)\s+PCF.*?Funnel\s+Vis\.\(SEC\)\s+([0-9.]+).*?PV\s+([0-9.]+).*?YP\s+([0-9.]+)', report, re.DOTALL)
         for i, mud in enumerate(muds[:3]):
             row[f"Mud {i+1} Weight (PCF)"] = mud[0]
@@ -64,14 +90,12 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
             row[f"Mud {i+1} PV"] = mud[2]
             row[f"Mud {i+1} YP"] = mud[3]
 
-        # Tops
         tops = re.findall(r'([A-Z]{2,10})\s+([0-9,]+)\s+([^\n]*)', report)
         for i, top in enumerate(tops[:5]):
             row[f"Formation {i+1} Name"] = top[0]
             row[f"Formation {i+1} Depth"] = top[1]
             row[f"Formation {i+1} Comment"] = top[2]
 
-        # Personnel
         personnel = re.findall(r'([A-Z0-9]{2,5})\s+([A-Z]{3,5})\s+([0-9]{1,3})', report)
         for i, person in enumerate(personnel[:5]):
             row[f"Personnel {i+1} Company"] = person[0]
@@ -104,9 +128,12 @@ def parse_limited_morning_report(pdf_path: str) -> pd.DataFrame:
         svc = re.search(r'SERVICE COMPANY, RENTAL TOOLS & OTHERS\s*={5,}\s*(.*?)\s*={5,}', report, re.DOTALL | re.IGNORECASE)
         row["Service Tools"] = re.sub(r'\s+', ' ', svc.group(1).strip()) if svc else None
 
-        all_data.append(row)
+        main_data.append(row)
 
-    return pd.DataFrame(all_data)
+        operations = parse_summary_operations(report, row["Rig"], row["Well Name"], row["Date"])
+        operations_data.extend(operations)
+
+    return pd.DataFrame(main_data), pd.DataFrame(operations_data)
 
 @app.route("/parse-batch", methods=["POST"])
 def parse_batch():
@@ -114,26 +141,29 @@ def parse_batch():
         return "No files uploaded", 400
 
     files = request.files.getlist("files")
-    combined_data = []
+    main_tables, ops_tables = [], []
 
     for file in files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             file.save(tmp.name)
             try:
-                df = parse_limited_morning_report(tmp.name)
-                combined_data.append(df)
+                main_df, ops_df = parse_limited_morning_report(tmp.name)
+                main_tables.append(main_df)
+                ops_tables.append(ops_df)
             finally:
                 os.unlink(tmp.name)
 
-    final_df = pd.concat(combined_data, ignore_index=True)
+    main_final = pd.concat(main_tables, ignore_index=True)
+    ops_final = pd.concat(ops_tables, ignore_index=True)
 
-    # Escape formulas
-    for col in final_df.select_dtypes(include='object').columns:
-        final_df[col] = final_df[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
+    for col in main_final.select_dtypes(include='object').columns:
+        main_final[col] = main_final[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
 
-    output_path = "combined_output.xlsx"
-    final_df.to_excel(output_path, index=False, engine="openpyxl")
-    return send_file(output_path, as_attachment=True, download_name="LMR_Well_Data.xlsx")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_output:
+        with pd.ExcelWriter(tmp_output.name, engine='openpyxl') as writer:
+            main_final.to_excel(writer, index=False, sheet_name="Well Data")
+            ops_final.to_excel(writer, index=False, sheet_name="Summary of Operations")
+        return send_file(tmp_output.name, as_attachment=True, download_name="LMR_Parsed_With_Operations.xlsx")
 
 @app.route("/")
 def home():
