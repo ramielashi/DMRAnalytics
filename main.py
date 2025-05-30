@@ -146,3 +146,14 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
+from flask import jsonify
+
+AUTHORIZED_PASSWORDS = {"oilfield2025", "clientXsecure", "aramco123"}
+
+@app.route("/auth", methods=["POST"])
+def auth():
+    data = request.get_json()
+    password = data.get("password", "")
+    return jsonify({"success": password in AUTHORIZED_PASSWORDS})
+
