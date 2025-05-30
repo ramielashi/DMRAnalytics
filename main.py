@@ -17,6 +17,49 @@ def extract_val(pattern, text, default=None):
     except IndexError:
         return default
 
+def extract_summary_operations(report_text, date, rig, well):
+    rows = []
+    summary_blocks = re.findall(
+        r'(\d{4}\s*-\s*\d{4}).*?(?=\n\d{4}\s*-\s*\d{4}|$)',
+        report_text, re.DOTALL
+    )
+    for block in summary_blocks:
+        from_to_match = re.search(r'(\d{4})\s*-\s*(\d{4})', block)
+        from_to = f"{from_to_match.group(1)} - {from_to_match.group(2)}" if from_to_match else ""
+        hrs = ""  # You can refine this if Hrs value appears
+        lateral = extract_val(r'Lateral\s*:\s*([^\n]+)', block, "")
+        phase = extract_val(r'Phase\s*:\s*([^\n]+)', block, "")
+        cat = extract_val(r'Cat\.?\s*:\s*([^\n]+)', block, "")
+        major_op = extract_val(r'Major OP\s*:\s*([^\n]+)', block, "")
+        action = extract_val(r'Action\s*:\s*([^\n]+)', block, "")
+        obj = extract_val(r'Object\s*:\s*([^\n]+)', block, "")
+        resp = extract_val(r'Resp\. Co\s*:\s*([^\n]+)', block, "")
+        hd_start = extract_val(r'Hole depth.*?Start\s*:? ([0-9]+)', block, "")
+        hd_end = extract_val(r'Hole depth.*?End\s*:? ([0-9]+)', block, "")
+        ed_start = extract_val(r'Event depth.*?Start\s*:? ([0-9]+)', block, "")
+        ed_end = extract_val(r'Event depth.*?End\s*:? ([0-9]+)', block, "")
+        summary = extract_val(r'(?:Summary of Operations|(?:\*\*|—|-)[^\n]*)([\s\S]+)', block, "").strip()
+        rows.append({
+            "Date": date,
+            "Rig": rig,
+            "Well": well,
+            "From - To": from_to,
+            "Hrs": hrs,
+            "Lateral": lateral,
+            "Phase": phase,
+            "Cat.": cat,
+            "Major OP": major_op,
+            "Action": action,
+            "Object": obj,
+            "Resp. Co": resp,
+            "Hole Depth Start": hd_start,
+            "Hole Depth End": hd_end,
+            "Event Depth Start": ed_start,
+            "Event Depth End": ed_end,
+            "Summary of Operations": summary
+        })
+    return rows
+
 def parse_limited_morning_report(pdf_path: str):
     doc = fitz.open(pdf_path)
     text_pages = [doc.load_page(p).get_text() for p in range(len(doc))]
@@ -24,8 +67,8 @@ def parse_limited_morning_report(pdf_path: str):
     reports = re.split(r'(?=Limited Morning Report for \d{2}/\d{2}/\d{4})', full_text)
     reports = [r.strip() for r in reports if "Limited Morning Report for" in r]
 
-    well_data_rows = []
-    summary_data_rows = []
+    well_data = []
+    ops_data = []
 
     for report in reports:
         row = {}
@@ -57,7 +100,6 @@ def parse_limited_morning_report(pdf_path: str):
         row["WOB"] = extract_val(r'WOB\s+([^\n]+)', report)
         row["RPM"] = extract_val(r'RPM\s+([^\n]+)', report)
 
-        # Mud data
         muds = re.findall(r'Weight\s+([0-9.]+)\s+PCF.*?Funnel\s+Vis\.\(SEC\)\s+([0-9.]+).*?PV\s+([0-9.]+).*?YP\s+([0-9.]+)', report, re.DOTALL)
         for i, mud in enumerate(muds[:3]):
             row[f"Mud {i+1} Weight (PCF)"] = mud[0]
@@ -65,14 +107,12 @@ def parse_limited_morning_report(pdf_path: str):
             row[f"Mud {i+1} PV"] = mud[2]
             row[f"Mud {i+1} YP"] = mud[3]
 
-        # Tops
         tops = re.findall(r'([A-Z]{2,10})\s+([0-9,]+)\s+([^\n]*)', report)
         for i, top in enumerate(tops[:5]):
             row[f"Formation {i+1} Name"] = top[0]
             row[f"Formation {i+1} Depth"] = top[1]
             row[f"Formation {i+1} Comment"] = top[2]
 
-        # Personnel
         personnel = re.findall(r'([A-Z0-9]{2,5})\s+([A-Z]{3,5})\s+([0-9]{1,3})', report)
         for i, person in enumerate(personnel[:5]):
             row[f"Personnel {i+1} Company"] = person[0]
@@ -84,19 +124,14 @@ def parse_limited_morning_report(pdf_path: str):
         rer_texts = re.findall(r'RER[^:\n]*[:=]?\s*[^.\n]*?(?:PPM|LFL)[^\n.]*', report, re.IGNORECASE)
         row["RER Readings"] = " | ".join(r.strip() for r in rer_texts if "PPM" in r or "LFL" in r)
 
-        remarks = re.search(r'Foreman Remarks\s*\n(.*?)(?:Page \d+ of \d+|\n\s*Saudi Aramco|mailto:)', report, re.DOTALL | re.IGNORECASE)
-        row["Foreman Remarks"] = re.sub(r'\s+', ' ', remarks.group(1).strip()) if remarks else None
-
-        timeline = re.findall(r'\d{4} - \d{4}.*?Summary of Operations(.*?)\n(?=\d{4} - \d{4}|\n\s*\*|Foreman Remarks)', report, re.DOTALL)
-        row["Operations Timeline"] = " | ".join([re.sub(r'\s+', ' ', t.strip()) for t in timeline])
+        row["Foreman Remarks"] = extract_val(r'Foreman Remarks\s*\n(.*?)(?:Page \d+ of \d+|\n\s*Saudi Aramco|mailto:)', report, "")
+        row["Operations Timeline"] = " | ".join([re.sub(r'\s+', ' ', t.strip()) for t in re.findall(r'\d{4} - \d{4}.*?Summary of Operations(.*?)\n(?=\d{4} - \d{4}|\n\s*\*|Foreman Remarks)', report, re.DOTALL)])
 
         drill_string = re.findall(r'Order Component Provider.*?Serial \n#\n(.*?)\n\n', report, re.DOTALL)
-        ds_text = re.sub(r'\s+', ' ', drill_string[0].strip()) if drill_string else None
-        row["Drill String"] = None if ds_text and "Page" in ds_text else ds_text
+        row["Drill String"] = None if drill_string and "Page" in drill_string[0] else drill_string[0].strip() if drill_string else None
 
         survey = re.search(r'DAILY SURVEY\s*\n(.*?)\n\n', report, re.DOTALL)
-        s_text = re.sub(r'\s+', ' ', survey.group(1).strip()) if survey else None
-        row["Directional Survey"] = None if s_text and "Page" in s_text else s_text
+        row["Directional Survey"] = None if survey and "Page" in survey.group(1) else survey.group(1).strip() if survey else None
 
         row["Wind"] = extract_val(r'Wind\s+([A-Z]+)', report)
         row["Sea"] = extract_val(r'Sea\s+([A-Z]+)', report)
@@ -105,25 +140,10 @@ def parse_limited_morning_report(pdf_path: str):
         svc = re.search(r'SERVICE COMPANY, RENTAL TOOLS & OTHERS\s*={5,}\s*(.*?)\s*={5,}', report, re.DOTALL | re.IGNORECASE)
         row["Service Tools"] = re.sub(r'\s+', ' ', svc.group(1).strip()) if svc else None
 
-        well_data_rows.append(row)
+        well_data.append(row)
+        ops_data.extend(extract_summary_operations(report, row["Date"], row["Rig"], row["Well Name"]))
 
-        # Summary of Operations table extraction
-        summary_blocks = re.findall(r'(\d{4}) - (\d{4})\s+([^\n]+)\n(\d+)\s+([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)', report)
-        for block in summary_blocks:
-            summary_data_rows.append({
-                "Date": row["Date"],
-                "Rig": row["Rig"],
-                "Well": row["Well Name"],
-                "From - To": f"{block[0]} - {block[1]}",
-                "Time Range Description": block[2],
-                "Hrs": block[3],
-                "Lateral": block[4],
-                "Phase": block[5],
-                "Category": block[6],
-                "Major Operation": block[7]
-            })
-
-    return pd.DataFrame(well_data_rows), pd.DataFrame(summary_data_rows)
+    return pd.DataFrame(well_data), pd.DataFrame(ops_data)
 
 @app.route("/parse-batch", methods=["POST"])
 def parse_batch():
@@ -132,36 +152,34 @@ def parse_batch():
 
     files = request.files.getlist("files")
     well_data = []
-    summary_data = []
+    summary_ops = []
 
     for file in files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             file.save(tmp.name)
             try:
-                df_well, df_summary = parse_limited_morning_report(tmp.name)
-                well_data.append(df_well)
-                summary_data.append(df_summary)
+                wd_df, so_df = parse_limited_morning_report(tmp.name)
+                well_data.append(wd_df)
+                summary_ops.append(so_df)
             finally:
                 os.unlink(tmp.name)
 
-    final_well = pd.concat(well_data, ignore_index=True)
-    final_summary = pd.concat(summary_data, ignore_index=True)
+    final_wd = pd.concat(well_data, ignore_index=True)
+    final_so = pd.concat(summary_ops, ignore_index=True)
 
-    # Escape formulas
-    for df in [final_well, final_summary]:
-        for col in df.select_dtypes(include='object').columns:
-            df[col] = df[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
+    for col in final_wd.select_dtypes(include='object').columns:
+        final_wd[col] = final_wd[col].apply(lambda x: f"'{x}" if isinstance(x, str) and x.startswith('=') else x)
 
-    output_path = "LMR_Final_With_Summary.xlsx"
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        final_well.to_excel(writer, sheet_name="Well Data", index=False)
-        final_summary.to_excel(writer, sheet_name="Summary of Operations", index=False)
+    output_path = "combined_output.xlsx"
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        final_wd.to_excel(writer, index=False, sheet_name="Well Data")
+        final_so.to_excel(writer, index=False, sheet_name="Summary of Operations")
 
-    return send_file(output_path, as_attachment=True, download_name="LMR_Final_With_Summary.xlsx")
+    return send_file(output_path, as_attachment=True, download_name="LMR_Well_Data.xlsx")
 
 @app.route("/")
 def home():
-    return "DMR Batch Parser with Summary is running."
+    return "DMR Batch Parser is running."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
