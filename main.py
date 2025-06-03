@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 import fitz  # PyMuPDF
 import re
@@ -11,6 +11,13 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 
 app = Flask(__name__)
 CORS(app)
+
+# Load passwords from environment variable
+def load_passwords():
+    raw = os.getenv("PASSWORD_LIST", "")
+    return set(p.strip() for p in raw.split(",") if p.strip())
+
+AUTHORIZED_PASSWORDS = load_passwords()
 
 def extract_val(pattern, text, default=None):
     match = re.search(pattern, text)
@@ -87,7 +94,6 @@ def parse_limited_morning_report(pdf_path: str):
         row["WOB"] = extract_val(r'WOB\s+([^\n]+)', report)
         row["RPM"] = extract_val(r'RPM\s+([^\n]+)', report)
 
-        # Mud
         muds = re.findall(r'Weight\s+([0-9.]+)\s+PCF.*?Funnel\s+Vis\.\(SEC\)\s+([0-9.]+).*?PV\s+([0-9.]+).*?YP\s+([0-9.]+)', report, re.DOTALL)
         for i, mud in enumerate(muds[:3]):
             row[f"Mud {i+1} Weight (PCF)"] = mud[0]
@@ -95,7 +101,6 @@ def parse_limited_morning_report(pdf_path: str):
             row[f"Mud {i+1} PV"] = mud[2]
             row[f"Mud {i+1} YP"] = mud[3]
 
-        # Tops
         tops = re.findall(r'([A-Z]{2,10})\s+([0-9,]+)\s+([^\n]*)', report)
         for i, top in enumerate(tops[:5]):
             row[f"Formation {i+1} Name"] = top[0]
@@ -140,20 +145,15 @@ def parse_batch():
 
     return send_file(output_path, as_attachment=True, download_name="LMR_Parsed_Final.xlsx")
 
-@app.route("/")
-def home():
-    return "DMR Batch Parser is running."
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
-
-from flask import jsonify
-
-AUTHORIZED_PASSWORDS = {"oilfield2025", "clientXsecure", "aramco123"}
-
 @app.route("/auth", methods=["POST"])
 def auth():
     data = request.get_json()
     password = data.get("password", "")
     return jsonify({"success": password in AUTHORIZED_PASSWORDS})
 
+@app.route("/")
+def home():
+    return "DMR Batch Parser is running."
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
